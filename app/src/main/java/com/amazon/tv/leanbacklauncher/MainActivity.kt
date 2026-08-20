@@ -594,6 +594,7 @@ class MainActivity : AppCompatActivity(), OnEditModeChangedListener,
     }
 
     override fun onBackPressed() {
+        if (supportFragmentManager.backStackEntryCount > 0) {
         super.onBackPressed()
         when {
             isInEditMode -> {
@@ -1685,7 +1686,7 @@ class MainActivity : AppCompatActivity(), OnEditModeChangedListener,
     private fun setEditMode(editMode: Boolean, useAnimation: Boolean) {
         var alpha = 1.0f
         mEditModeAnimation.reset()
-        if (useAnimation) {
+//            Log.w(TAG, "Animations:$buf")        if (useAnimation) {
             mEditModeAnimation.init(
                 EditModeMassFadeAnimator(
                     this,
@@ -1820,7 +1821,7 @@ class MainActivity : AppCompatActivity(), OnEditModeChangedListener,
 //            val buf = StringWriter()
 //            buf.append("Caught partially animated state; resetting...\n")
 //            mLaunchAnimation.dump("", PrintWriter(buf), mList)
-//            Log.w(TAG, "Animations:$buf")
+
             mLaunchAnimation.reset()
         }
     }
