@@ -5,10 +5,11 @@ on:
     branches: [ "master", "main" ]
   workflow_dispatch:
 
-# 🔑 Dar permisos de escritura al workflow
+# 🔑 PERMISOS PARA EL WORKFLOW
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 jobs:
   build:
@@ -17,8 +18,8 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        # 🔑 Token con permisos de escritura
         token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
 
     - name: Set up JDK 17
       uses: actions/setup-java@v4
@@ -30,44 +31,40 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
-    # 👇 Crear google-services.json
+    # 👇 CREAR google-services.json (si no existe)
     - name: Create google-services.json
       run: |
         if [ ! -f app/google-services.json ]; then
           echo '{"project_info":{"project_number":"123456789012","firebase_url":"https://leanbacklauncher-default-rtdb.firebaseio.com","project_id":"leanbacklauncher","storage_bucket":"leanbacklauncher.appspot.com"},"client":[{"client_info":{"mobilesdk_app_id":"1:123456789012:android:abcdef1234567890","android_client_info":{"package_name":"com.amazon.tv.leanbacklauncher"}},"oauth_client":[],"api_key":[{"current_key":"AIzaSyDummyKey1234567890abcdef"}],"services":{"analytics_service":{"status":1},"appinvite_service":{"status":0},"ads_service":{"status":0}}}],"configuration_version":"1"}' > app/google-services.json
+          echo "✅ google-services.json creado"
+        else
+          echo "✅ google-services.json ya existe"
         fi
 
-    # 👇 Instalar Gemini CLI
+    # 👇 INSTALAR GEMINI CLI
     - name: Install Gemini CLI
-      run: npm install -g @google/gemini-cli
-
-    # 👇 Configurar Git
-    - name: Configure Git
       run: |
-        git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git config --global user.name "github-actions[bot]"
+        npm install -g @google/gemini-cli
+        echo "✅ Gemini CLI instalado"
 
-    # 👇 Compilar (puede fallar)
+    # 👇 INTENTAR COMPILAR
     - name: Build with Gradle
       id: build
       continue-on-error: true
       run: ./gradlew assembleDebug
 
-    # 👇 GEMINI CORRIGE EL ERROR AUTOMÁTICAMENTE
-    - name: 🤖 Gemini auto-corrige el build
+    # 👇 SI FALLA, GEMINI ANALIZA Y CORRIGE
+    - name: 🤖 Gemini analiza y corrige el error
       if: steps.build.outcome == 'failure'
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         echo "========================================="
         echo "🔴 BUILD FALLÓ - Gemini va a corregirlo"
         echo "========================================="
         
-        # Capturar error
         ERROR_LOG=$(./gradlew assembleDebug --stacktrace 2>&1 | tail -200)
         
-        # Gemini analiza y propone cambios
         cat > prompt.txt << EOF
         Estoy en GitHub Actions. El build de mi proyecto Android falló con este error:
         
@@ -75,34 +72,25 @@ jobs:
         
         Proyecto: https://github.com/${{ github.repository }}
         
-        Por favor, dime EXACTAMENTE qué archivos debo modificar y con qué código.
+        Dime EXACTAMENTE qué archivos debo modificar y con qué código.
         Dame el contenido COMPLETO de los archivos para reemplazar.
-        
         Responde en este formato:
         
         ### [ruta/del/archivo]
         \`\`\`
-        [contenido completo del archivo]
+        [contenido completo]
         \`\`\`
         EOF
         
-        # Obtener respuesta de Gemini
-        echo "🤖 Pidiendo solución a Gemini..."
+        echo "🤖 Enviando a Gemini..."
         RESPONSE=$(cat prompt.txt | gemini --prompt-file -)
-        
         echo "$RESPONSE"
         
-        # Extraer y aplicar cambios automáticamente
         echo "🛠️ Aplicando correcciones automáticas..."
-        
-        # Extraer archivos del código de respuesta
         echo "$RESPONSE" | while IFS= read -r line; do
           if [[ $line =~ ^###\ (.*)$ ]]; then
             current_file="${BASH_REMATCH[1]}"
             echo "📝 Modificando: $current_file"
-            # Crear/sobrescribir archivo
-            touch "$current_file"
-            # Limpiar archivo para escribir nuevo contenido
             > "$current_file"
             in_code_block=false
           elif [[ $line == '```'* ]] && [[ "$in_code_block" == false ]]; then
@@ -114,7 +102,7 @@ jobs:
           fi
         done
 
-    # 👇 Reintentar compilar después de las correcciones
+    # 👇 REINTENTAR COMPILAR
     - name: 🔄 Reintentar compilar con las correcciones
       if: steps.build.outcome == 'failure'
       id: rebuild
@@ -124,38 +112,34 @@ jobs:
         ./gradlew clean
         ./gradlew assembleDebug
 
-    # 👇 Si las correcciones funcionaron, hacer commit y push
-    - name: 📤 Commit y push de las correcciones
+    # 👇 SUBIR CAMBIOS SI FUNCIONA
+    - name: 📤 Subir correcciones
       if: steps.rebuild.outcome == 'success'
       run: |
         echo "✅ ¡Las correcciones funcionaron! Subiendo cambios..."
         git add .
-        git commit -m "🤖 Auto-fix: Correcciones aplicadas por Gemini CLI [skip ci]" || echo "No hay cambios para commit"
+        git commit -m "🤖 Auto-fix: Correcciones aplicadas por Gemini CLI [skip ci]" || echo "No hay cambios"
         git push origin ${{ github.ref_name }} || echo "No se pudo hacer push"
 
-    # 👇 Si falla, crear Pull Request con las correcciones propuestas
+    # 👇 CREAR PR SI FALLA
     - name: 🔄 Crear Pull Request con correcciones
       if: steps.rebuild.outcome == 'failure' && steps.build.outcome == 'failure'
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         echo "⚠️ Las correcciones automáticas fallaron. Creando Pull Request..."
-        
-        # Crear rama con correcciones
         BRANCH_NAME="auto-fix-$(date +%s)"
         git checkout -b $BRANCH_NAME
         git add .
-        git commit -m "🤖 Correcciones propuestas por Gemini (requiere revisión)" || echo "No hay cambios"
+        git commit -m "🤖 Correcciones propuestas por Gemini" || echo "No hay cambios"
         git push origin $BRANCH_NAME
-        
-        # Crear Pull Request
         gh pr create \
           --title "🤖 [Auto-fix] Correcciones propuestas por Gemini CLI" \
-          --body "Este PR fue creado automáticamente por Gemini CLI para corregir errores de compilación.\n\nLos cambios propuestos deben ser revisados antes de mergear." \
+          --body "Este PR fue creado automáticamente por Gemini CLI para corregir errores de compilación." \
           --base ${{ github.ref_name }} \
           --head $BRANCH_NAME || echo "No se pudo crear PR"
 
-    # 👇 Subir APK si compila bien
+    # 👇 SUBIR APK SI COMPILA
     - name: 📦 Upload APK
       if: steps.rebuild.outcome == 'success' || steps.build.outcome == 'success'
       uses: actions/upload-artifact@v4
@@ -163,7 +147,7 @@ jobs:
         name: LeanbackLauncher-APK
         path: app/build/outputs/apk/debug/*.apk
 
-    # 👇 Guardar logs siempre
+    # 👇 GUARDAR LOGS
     - name: 📁 Guardar logs
       if: always()
       uses: actions/upload-artifact@v4
