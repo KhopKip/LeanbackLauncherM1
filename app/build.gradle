@@ -1,8 +1,7 @@
 plugins {
     id("com.android.application")
     id("com.google.devtools.ksp")
-    id("com.google.firebase.crashlytics") // Crashlytics Gradle plugin
-    id("com.google.gms.google-services") // Google Services Gradle plugin
+    id("com.google.firebase.crashlytics")
     id("org.jetbrains.kotlin.android")
 }
 
@@ -52,7 +51,7 @@ android {
 }
 
 dependencies {
-    def leanback_version = '1.2.0' // "1.0.0"
+    def leanback_version = '1.2.0'
     implementation fileTree(dir: 'libs', include: ['*.jar'])
     // androidx
     implementation 'androidx.appcompat:appcompat:1.7.0'
@@ -85,3 +84,5 @@ repositories {
     mavenCentral()
     maven { url 'https://jitpack.io' }
 }
+
+apply plugin: 'com.google.gms.google-services'
