@@ -1,9 +1,14 @@
-name: Android CI
+name: Android CI with Auto-Fix
 
 on:
   push:
     branches: [ "master", "main" ]
-  workflow_dispatch: # Permite ejecutarlo manualmente
+  workflow_dispatch:
+
+# 🔑 Dar permisos de escritura al workflow
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
   build:
@@ -11,7 +16,10 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    
+      with:
+        # 🔑 Token con permisos de escritura
+        token: ${{ secrets.GITHUB_TOKEN }}
+
     - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
@@ -22,92 +30,146 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
-    # 👇 CREAR google-services.json (si no existe)
+    # 👇 Crear google-services.json
     - name: Create google-services.json
       run: |
         if [ ! -f app/google-services.json ]; then
           echo '{"project_info":{"project_number":"123456789012","firebase_url":"https://leanbacklauncher-default-rtdb.firebaseio.com","project_id":"leanbacklauncher","storage_bucket":"leanbacklauncher.appspot.com"},"client":[{"client_info":{"mobilesdk_app_id":"1:123456789012:android:abcdef1234567890","android_client_info":{"package_name":"com.amazon.tv.leanbacklauncher"}},"oauth_client":[],"api_key":[{"current_key":"AIzaSyDummyKey1234567890abcdef"}],"services":{"analytics_service":{"status":1},"appinvite_service":{"status":0},"ads_service":{"status":0}}}],"configuration_version":"1"}' > app/google-services.json
-          echo "✅ google-services.json creado"
-        else
-          echo "✅ google-services.json ya existe"
         fi
 
-    # 👇 INSTALAR GEMINI CLI
+    # 👇 Instalar Gemini CLI
     - name: Install Gemini CLI
-      run: |
-        npm install -g @google/gemini-cli
-        echo "✅ Gemini CLI instalado"
+      run: npm install -g @google/gemini-cli
 
-    # 👇 INTENTAR COMPILAR (continuar aunque falle)
+    # 👇 Configurar Git
+    - name: Configure Git
+      run: |
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git config --global user.name "github-actions[bot]"
+
+    # 👇 Compilar (puede fallar)
     - name: Build with Gradle
       id: build
       continue-on-error: true
       run: ./gradlew assembleDebug
 
-    # 👇 SI FALLA, ANALIZAR CON GEMINI
-    - name: 🔍 Gemini analiza el error de compilación
+    # 👇 GEMINI CORRIGE EL ERROR AUTOMÁTICAMENTE
+    - name: 🤖 Gemini auto-corrige el build
       if: steps.build.outcome == 'failure'
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         echo "========================================="
-        echo "🔴 BUILD FALLÓ - Gemini CLI analizando..."
+        echo "🔴 BUILD FALLÓ - Gemini va a corregirlo"
         echo "========================================="
         
-        # Capturar el error completo
+        # Capturar error
         ERROR_LOG=$(./gradlew assembleDebug --stacktrace 2>&1 | tail -200)
         
-        # Crear prompt para Gemini
-        cat > prompt.txt << 'EOF'
-        Soy un proyecto Android en GitHub Actions. El build falló con este error:
+        # Gemini analiza y propone cambios
+        cat > prompt.txt << EOF
+        Estoy en GitHub Actions. El build de mi proyecto Android falló con este error:
         
         $ERROR_LOG
         
-        Mi proyecto está en: https://github.com/KhopKip/LeanbackLauncherM1
+        Proyecto: https://github.com/${{ github.repository }}
         
-        Por favor, dime EXACTAMENTE:
-        1. Qué archivos debo modificar
-        2. Qué líneas debo cambiar
-        3. El código completo para copiar y pegar
+        Por favor, dime EXACTAMENTE qué archivos debo modificar y con qué código.
+        Dame el contenido COMPLETO de los archivos para reemplazar.
         
-        Dame una solución clara y directa.
+        Responde en este formato:
+        
+        ### [ruta/del/archivo]
+        \`\`\`
+        [contenido completo del archivo]
+        \`\`\`
         EOF
         
-        # Reemplazar $ERROR_LOG en el prompt
-        sed -i "s|\$ERROR_LOG|$ERROR_LOG|g" prompt.txt
+        # Obtener respuesta de Gemini
+        echo "🤖 Pidiendo solución a Gemini..."
+        RESPONSE=$(cat prompt.txt | gemini --prompt-file -)
         
-        # Enviar a Gemini
-        echo "🤖 Enviando a Gemini..."
-        cat prompt.txt | gemini --prompt-file -
+        echo "$RESPONSE"
         
-        echo "========================================="
-        echo "✅ Análisis de Gemini completado"
-        echo "========================================="
+        # Extraer y aplicar cambios automáticamente
+        echo "🛠️ Aplicando correcciones automáticas..."
+        
+        # Extraer archivos del código de respuesta
+        echo "$RESPONSE" | while IFS= read -r line; do
+          if [[ $line =~ ^###\ (.*)$ ]]; then
+            current_file="${BASH_REMATCH[1]}"
+            echo "📝 Modificando: $current_file"
+            # Crear/sobrescribir archivo
+            touch "$current_file"
+            # Limpiar archivo para escribir nuevo contenido
+            > "$current_file"
+            in_code_block=false
+          elif [[ $line == '```'* ]] && [[ "$in_code_block" == false ]]; then
+            in_code_block=true
+          elif [[ $line == '```'* ]] && [[ "$in_code_block" == true ]]; then
+            in_code_block=false
+          elif [[ "$in_code_block" == true ]] && [[ -n "$current_file" ]]; then
+            echo "$line" >> "$current_file"
+          fi
+        done
 
-    # 👇 GUARDAR LOGS DE ERROR
-    - name: 📁 Guardar logs de error
+    # 👇 Reintentar compilar después de las correcciones
+    - name: 🔄 Reintentar compilar con las correcciones
       if: steps.build.outcome == 'failure'
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-error-logs
-        path: |
-          app/build/outputs/
-          build/reports/
-          ~/.gradle/
+      id: rebuild
+      continue-on-error: true
+      run: |
+        echo "🔄 Recompilando con las correcciones de Gemini..."
+        ./gradlew clean
+        ./gradlew assembleDebug
 
-    # 👇 SUBIR APK SI COMPILA BIEN
+    # 👇 Si las correcciones funcionaron, hacer commit y push
+    - name: 📤 Commit y push de las correcciones
+      if: steps.rebuild.outcome == 'success'
+      run: |
+        echo "✅ ¡Las correcciones funcionaron! Subiendo cambios..."
+        git add .
+        git commit -m "🤖 Auto-fix: Correcciones aplicadas por Gemini CLI [skip ci]" || echo "No hay cambios para commit"
+        git push origin ${{ github.ref_name }} || echo "No se pudo hacer push"
+
+    # 👇 Si falla, crear Pull Request con las correcciones propuestas
+    - name: 🔄 Crear Pull Request con correcciones
+      if: steps.rebuild.outcome == 'failure' && steps.build.outcome == 'failure'
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        echo "⚠️ Las correcciones automáticas fallaron. Creando Pull Request..."
+        
+        # Crear rama con correcciones
+        BRANCH_NAME="auto-fix-$(date +%s)"
+        git checkout -b $BRANCH_NAME
+        git add .
+        git commit -m "🤖 Correcciones propuestas por Gemini (requiere revisión)" || echo "No hay cambios"
+        git push origin $BRANCH_NAME
+        
+        # Crear Pull Request
+        gh pr create \
+          --title "🤖 [Auto-fix] Correcciones propuestas por Gemini CLI" \
+          --body "Este PR fue creado automáticamente por Gemini CLI para corregir errores de compilación.\n\nLos cambios propuestos deben ser revisados antes de mergear." \
+          --base ${{ github.ref_name }} \
+          --head $BRANCH_NAME || echo "No se pudo crear PR"
+
+    # 👇 Subir APK si compila bien
     - name: 📦 Upload APK
-      if: steps.build.outcome == 'success'
+      if: steps.rebuild.outcome == 'success' || steps.build.outcome == 'success'
       uses: actions/upload-artifact@v4
       with:
         name: LeanbackLauncher-APK
         path: app/build/outputs/apk/debug/*.apk
 
-    # 👇 SUBIR APK INCLUSO SI FALLA (por si generó algo)
-    - name: 📦 Upload APK (incluso si falló)
+    # 👇 Guardar logs siempre
+    - name: 📁 Guardar logs
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: LeanbackLauncher-APK-anyway
-        path: app/build/outputs/apk/debug/*.apk
-        if-no-files-found: ignore
+        name: build-logs
+        path: |
+          app/build/outputs/
+          build/reports/
+          ~/.gradle/
