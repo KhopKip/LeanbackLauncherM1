@@ -22,12 +22,92 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
+    # 👇 CREAR google-services.json (si no existe)
+    - name: Create google-services.json
+      run: |
+        if [ ! -f app/google-services.json ]; then
+          echo '{"project_info":{"project_number":"123456789012","firebase_url":"https://leanbacklauncher-default-rtdb.firebaseio.com","project_id":"leanbacklauncher","storage_bucket":"leanbacklauncher.appspot.com"},"client":[{"client_info":{"mobilesdk_app_id":"1:123456789012:android:abcdef1234567890","android_client_info":{"package_name":"com.amazon.tv.leanbacklauncher"}},"oauth_client":[],"api_key":[{"current_key":"AIzaSyDummyKey1234567890abcdef"}],"services":{"analytics_service":{"status":1},"appinvite_service":{"status":0},"ads_service":{"status":0}}}],"configuration_version":"1"}' > app/google-services.json
+          echo "✅ google-services.json creado"
+        else
+          echo "✅ google-services.json ya existe"
+        fi
+
+    # 👇 INSTALAR GEMINI CLI
+    - name: Install Gemini CLI
+      run: |
+        npm install -g @google/gemini-cli
+        echo "✅ Gemini CLI instalado"
+
+    # 👇 INTENTAR COMPILAR (continuar aunque falle)
     - name: Build with Gradle
+      id: build
+      continue-on-error: true
       run: ./gradlew assembleDebug
 
-    - name: Upload APK
+    # 👇 SI FALLA, ANALIZAR CON GEMINI
+    - name: 🔍 Gemini analiza el error de compilación
+      if: steps.build.outcome == 'failure'
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      run: |
+        echo "========================================="
+        echo "🔴 BUILD FALLÓ - Gemini CLI analizando..."
+        echo "========================================="
+        
+        # Capturar el error completo
+        ERROR_LOG=$(./gradlew assembleDebug --stacktrace 2>&1 | tail -200)
+        
+        # Crear prompt para Gemini
+        cat > prompt.txt << 'EOF'
+        Soy un proyecto Android en GitHub Actions. El build falló con este error:
+        
+        $ERROR_LOG
+        
+        Mi proyecto está en: https://github.com/KhopKip/LeanbackLauncherM1
+        
+        Por favor, dime EXACTAMENTE:
+        1. Qué archivos debo modificar
+        2. Qué líneas debo cambiar
+        3. El código completo para copiar y pegar
+        
+        Dame una solución clara y directa.
+        EOF
+        
+        # Reemplazar $ERROR_LOG en el prompt
+        sed -i "s|\$ERROR_LOG|$ERROR_LOG|g" prompt.txt
+        
+        # Enviar a Gemini
+        echo "🤖 Enviando a Gemini..."
+        cat prompt.txt | gemini --prompt-file -
+        
+        echo "========================================="
+        echo "✅ Análisis de Gemini completado"
+        echo "========================================="
+
+    # 👇 GUARDAR LOGS DE ERROR
+    - name: 📁 Guardar logs de error
+      if: steps.build.outcome == 'failure'
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-error-logs
+        path: |
+          app/build/outputs/
+          build/reports/
+          ~/.gradle/
+
+    # 👇 SUBIR APK SI COMPILA BIEN
+    - name: 📦 Upload APK
+      if: steps.build.outcome == 'success'
       uses: actions/upload-artifact@v4
       with:
         name: LeanbackLauncher-APK
         path: app/build/outputs/apk/debug/*.apk
-        
+
+    # 👇 SUBIR APK INCLUSO SI FALLA (por si generó algo)
+    - name: 📦 Upload APK (incluso si falló)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: LeanbackLauncher-APK-anyway
+        path: app/build/outputs/apk/debug/*.apk
+        if-no-files-found: ignore
